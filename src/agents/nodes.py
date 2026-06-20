@@ -10,6 +10,7 @@ from .state import ResearchState
 
 MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "8192"))
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "2"))
 
 
 def _chat(prompt: str, max_tokens: int = MAX_TOKENS) -> str:
@@ -28,17 +29,18 @@ def route_query(state: ResearchState) -> ResearchState:
     """Decide whether to retrieve from the vector store or answer directly."""
     query = state["query"]
 
-    prompt = f"""You are a research assistant router.
-Given a user query, decide if it requires retrieving information from a document knowledge base
-or if it can be answered directly from general knowledge.
+    prompt = f"""You are a document routing assistant. Your default is ALWAYS to use the vectorstore.
+
+Only choose "direct_answer" if the query is CLEARLY a general knowledge question with NO connection to personal data, resumes, companies, documents, or any specific entity.
+
+Examples of direct_answer: "What is the capital of France?", "Explain what machine learning is"
+Examples of vectorstore: EVERYTHING ELSE — including questions about people, companies, work experience, skills, documents, reports, data
 
 Query: {query}
 
-Respond with a JSON object:
-{{"route": "vectorstore"}} — if the query needs specific documents, facts, data, or research
-{{"route": "direct_answer"}} — if the query is a general question answerable without documents
-
-Respond ONLY with the JSON object, no other text."""
+Respond ONLY with one of these JSON objects — no other text:
+{{"route": "vectorstore"}}
+{{"route": "direct_answer"}}"""
 
     text = _chat(prompt, max_tokens=64)
     try:
@@ -70,18 +72,18 @@ def grade_documents(state: ResearchState) -> ResearchState:
 
     graded = []
     for doc in docs:
-        prompt = f"""You are a relevance grader.
-Assess whether the following document chunk is useful for answering the query.
+        prompt = f"""You are a relevance grader. Be GENEROUS — if the document chunk contains ANY information that could help answer the query, mark it as relevant.
 
 Query: {query}
 Document: {doc['content'][:500]}
 
-Respond ONLY with JSON: {{"relevant": true}} or {{"relevant": false}}"""
+Respond ONLY with JSON: {{"relevant": true}} or {{"relevant": false}}
+When in doubt, respond {{"relevant": true}}"""
 
         text = _chat(prompt, max_tokens=32)
         try:
             result = json.loads(text.strip())
-            if result.get("relevant", False):
+            if result.get("relevant", True):
                 graded.append(doc)
         except (json.JSONDecodeError, KeyError):
             graded.append(doc)
@@ -114,18 +116,17 @@ def generate_with_context(state: ResearchState) -> ResearchState:
 
     context = "\n\n---\n\n".join(context_blocks)
 
-    prompt = f"""You are an expert research analyst. Using ONLY the provided source documents,
-write a comprehensive, well-structured answer to the research query.
-
-Every factual claim must be supported by citing the source number, e.g. [1], [2].
-Be precise and analytical. If sources conflict, note the discrepancy.
+    prompt = f"""You are an expert research analyst. You MUST answer using ONLY the information from the source documents below.
+Do NOT use any outside knowledge or make up any information.
+If a fact is not in the documents, do not include it.
+Every factual claim must cite its source number, e.g. [1], [2].
 
 Research Query: {query}
 
 Source Documents:
 {context}
 
-Write a detailed, cited answer:"""
+Write a detailed answer using ONLY the information above. Do not invent or assume anything not stated in the sources:"""
 
     full_response = _chat(prompt)
     return {**state, "generation": full_response, "citations": citations}

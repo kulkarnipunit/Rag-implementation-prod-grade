@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RAG Research Agent</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #f5f6fa;
+      --surface:   #ffffff;
+      --surface2:  #f0f1f5;
+      --border:    #e2e4ed;
+      --border2:   #d0d3e0;
+      --accent:    #4f46e5;
+      --accent-lt: #ede9fe;
+      --green:     #16a34a;
+      --green-lt:  #dcfce7;
+      --red:       #dc2626;
+      --red-lt:    #fee2e2;
+      --text:      #111827;
+      --text2:     #4b5563;
+      --text3:     #9ca3af;
+      --radius:    10px;
+      --radius-sm: 7px;
+    }
+
+    html { height: 100%; }
+    body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* TOPBAR */
+    .topbar {
+      height: 56px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand-icon {
+      width: 30px; height: 30px;
+      background: var(--accent);
+      border-radius: 7px;
+      display: grid; place-items: center;
+    }
+    .brand-icon svg { width: 16px; height: 16px; fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; }
+    .brand-name { font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: -0.3px; }
+    .brand-sub  { font-size: 11px; color: var(--text3); }
+
+    .topbar-right { display: flex; align-items: center; gap: 12px; }
+
+    .status-pill {
+      display: flex; align-items: center; gap: 6px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 5px 13px;
+      font-size: 12px;
+      color: var(--text2);
+    }
+    .status-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--text3);
+      transition: background 0.3s;
+    }
+    .status-dot.online  { background: var(--green); }
+    .status-dot.offline { background: var(--red); }
+
+    .chunk-pill {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 5px 13px;
+      font-size: 12px;
+      color: var(--text2);
+    }
+    .chunk-pill b { color: var(--accent); }
+
+    /* WORKSPACE */
+    .workspace {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* SIDEBAR */
+    .sidebar {
+      width: 272px;
+      min-width: 272px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+
+    .sidebar-section {
+      padding: 18px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .section-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.1px;
+      color: var(--text3);
+      margin-bottom: 12px;
+    }
+
+    .field { margin-bottom: 10px; }
+    .field label { font-size: 11px; color: var(--text2); display: block; margin-bottom: 4px; font-weight: 500; }
+
+    input[type="text"] {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-size: 12px;
+      padding: 8px 10px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      font-family: inherit;
+    }
+    input[type="text"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(79,70,229,0.1);
+    }
+
+    .btn {
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      width: 100%; padding: 9px 14px;
+      border-radius: var(--radius-sm);
+      border: none; cursor: pointer;
+      font-size: 12px; font-weight: 600;
+      font-family: inherit;
+      transition: all 0.15s;
+    }
+    .btn-primary {
+      background: var(--accent); color: #fff;
+    }
+    .btn-primary:hover { background: #4338ca; }
+    .btn-outline {
+      background: transparent; color: var(--red);
+      border: 1px solid var(--border2);
+      margin-top: 7px;
+    }
+    .btn-outline:hover { border-color: var(--red); background: var(--red-lt); }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .alert {
+      margin-top: 10px; padding: 8px 10px;
+      border-radius: var(--radius-sm); font-size: 11px;
+      display: none; line-height: 1.5;
+    }
+    .alert.success { background: var(--green-lt); color: var(--green); border: 1px solid #bbf7d0; }
+    .alert.error   { background: var(--red-lt);   color: var(--red);   border: 1px solid #fecaca; }
+    .alert.info    { background: var(--accent-lt); color: var(--accent); border: 1px solid #c4b5fd; }
+
+    /* Pipeline steps */
+    .pipeline { display: flex; flex-direction: column; gap: 5px; }
+    .step {
+      display: flex; align-items: center; gap: 9px;
+      padding: 8px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 11px; color: var(--text2);
+      transition: all 0.25s;
+    }
+    .step-num {
+      width: 18px; height: 18px; border-radius: 50%;
+      background: var(--border2); color: var(--text3);
+      font-size: 10px; font-weight: 700;
+      display: grid; place-items: center; flex-shrink: 0;
+      transition: all 0.25s;
+    }
+    .step.active { border-color: var(--accent); background: var(--accent-lt); color: var(--accent); }
+    .step.active .step-num { background: var(--accent); color: #fff; }
+    .step.done  { border-color: #bbf7d0; background: var(--green-lt); color: var(--green); }
+    .step.done  .step-num { background: var(--green); color: #fff; }
+
+    .step-pulse {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--border2); margin-left: auto; flex-shrink: 0;
+      transition: all 0.25s;
+    }
+    .step.active .step-pulse { background: var(--accent); animation: pulse 1s infinite; }
+    .step.done   .step-pulse { background: var(--green); }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    /* Formats */
+    .formats { display: flex; flex-direction: column; gap: 5px; }
+    .fmt-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 7px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 11px; color: var(--text2);
+    }
+    .fmt-badge {
+      font-size: 9px; font-weight: 700; padding: 2px 7px;
+      border-radius: 4px; letter-spacing: 0.5px;
+    }
+    .badge-pdf { background: #fee2e2; color: #dc2626; }
+    .badge-txt { background: #dcfce7; color: #16a34a; }
+    .badge-md  { background: #ede9fe; color: #7c3aed; }
+
+    /* MAIN */
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    /* Query Panel */
+    .query-panel {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 18px 24px;
+      flex-shrink: 0;
+    }
+
+    .query-panel-label {
+      font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 1.1px;
+      color: var(--text3); margin-bottom: 12px;
+    }
+
+    .query-inputs { display: flex; flex-direction: column; gap: 9px; }
+
+    .topic-input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text2);
+      font-size: 12px;
+      padding: 8px 11px;
+      outline: none;
+      font-family: inherit;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .topic-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(79,70,229,0.1);
+    }
+
+    .query-textarea {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-size: 13px;
+      padding: 10px 12px;
+      outline: none;
+      resize: none;
+      font-family: inherit;
+      line-height: 1.6;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      min-height: 72px;
+    }
+    .query-textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(79,70,229,0.1);
+    }
+
+    .query-actions {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .query-hint { font-size: 11px; color: var(--text3); }
+
+    #run-btn {
+      display: flex; align-items: center; gap: 6px;
+      padding: 9px 22px;
+      background: var(--accent);
+      color: #fff; border: none;
+      border-radius: var(--radius-sm);
+      font-size: 13px; font-weight: 700;
+      cursor: pointer; font-family: inherit;
+      transition: background 0.15s;
+    }
+    #run-btn:hover { background: #4338ca; }
+    #run-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* Report Area */
+    .report-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      background: var(--bg);
+    }
+
+    /* Meta bar */
+    .meta-bar {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .meta-tag {
+      font-size: 11px; padding: 3px 11px;
+      border-radius: 20px; font-weight: 500;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text2);
+    }
+    .meta-tag.accent { background: var(--accent-lt); color: var(--accent); border-color: #c4b5fd; }
+    .meta-tag.green  { background: var(--green-lt);  color: var(--green);  border-color: #bbf7d0; }
+
+    /* Empty State */
+    #empty-state {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 16px; text-align: center; padding: 40px;
+    }
+    .empty-icon {
+      width: 64px; height: 64px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      display: grid; place-items: center;
+    }
+    .empty-icon svg { width: 28px; height: 28px; stroke: var(--text3); fill: none; stroke-width: 1.5; }
+    .empty-title { font-size: 17px; font-weight: 700; color: var(--text); }
+    .empty-sub   { font-size: 13px; color: var(--text2); max-width: 360px; line-height: 1.7; }
+
+    .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 4px; }
+    .chip {
+      font-size: 11px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 20px; padding: 5px 13px;
+      color: var(--text2); cursor: pointer;
+      transition: all 0.15s;
+    }
+    .chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-lt); }
+
+    /* Loading */
+    #loading-state {
+      display: none; flex: 1;
+      flex-direction: column; align-items: center;
+      justify-content: center; gap: 20px;
+    }
+    .loader-ring {
+      width: 44px; height: 44px;
+      border-radius: 50%;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      animation: spin 0.85s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loader-label { font-size: 13px; color: var(--text2); text-align: center; }
+    .loader-sub   { font-size: 11px; color: var(--text3); }
+
+    /* Report Card */
+    #report-card {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+
+    .report-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 22px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+      border-radius: var(--radius) var(--radius) 0 0;
+    }
+    .report-title { font-size: 13px; font-weight: 700; color: var(--text); }
+
+    .copy-btn {
+      display: flex; align-items: center; gap: 5px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text2);
+      font-size: 11px; padding: 5px 11px;
+      cursor: pointer; font-family: inherit;
+      transition: all 0.15s;
+    }
+    .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    .report-body { padding: 28px 32px; }
+
+    /* Markdown */
+    .md h1 { font-size: 20px; font-weight: 800; color: var(--text); margin-bottom: 16px; letter-spacing: -0.4px; }
+    .md h2 { font-size: 15px; font-weight: 700; color: var(--text); margin: 24px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+    .md h3 { font-size: 13px; font-weight: 700; color: var(--text); margin: 18px 0 8px; }
+    .md p  { margin-bottom: 12px; color: var(--text2); line-height: 1.8; }
+    .md ul, .md ol { padding-left: 20px; margin-bottom: 12px; }
+    .md li { margin-bottom: 5px; color: var(--text2); }
+    .md strong { color: var(--text); font-weight: 700; }
+    .md em     { color: var(--accent); font-style: italic; }
+    .md code   { background: var(--surface2); padding: 2px 6px; border-radius: 4px; font-size: 12px; color: #7c3aed; font-family: 'SF Mono', monospace; }
+    .md blockquote { border-left: 3px solid var(--accent); padding: 10px 16px; background: var(--accent-lt); border-radius: 0 6px 6px 0; margin: 14px 0; color: var(--text2); font-style: italic; }
+    .md hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+    .md a  { color: var(--accent); text-decoration: none; }
+    .md a:hover { text-decoration: underline; }
+    .md table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+    .md th { background: var(--surface2); padding: 9px 14px; text-align: left; color: var(--text2); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+    .md td { padding: 9px 14px; border-bottom: 1px solid var(--border); color: var(--text2); }
+    .md tr:last-child td { border-bottom: none; }
+
+    /* Sources Footer */
+    .sources-footer {
+      margin: 0 22px 22px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 13px 16px;
+    }
+    .sources-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--text3); margin-bottom: 10px; }
+    .source-chips  { display: flex; flex-wrap: wrap; gap: 7px; }
+    .source-chip {
+      font-size: 11px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 5px;
+      padding: 3px 9px; color: var(--text2);
+    }
+
+    /* Tabs */
+    .tabs {
+      display: flex; gap: 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      padding: 0 24px;
+      flex-shrink: 0;
+    }
+    .tab {
+      padding: 12px 18px;
+      font-size: 13px; font-weight: 600;
+      color: var(--text2); cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s;
+      user-select: none;
+    }
+    .tab:hover { color: var(--accent); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .tab-panel { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+    .tab-panel.active { display: flex; }
+
+    /* DB Viewer */
+    .db-area {
+      flex: 1; overflow-y: auto; padding: 24px;
+      display: flex; flex-direction: column; gap: 12px;
+      background: var(--bg);
+    }
+    .db-toolbar {
+      display: flex; align-items: center; justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .db-count {
+      font-size: 12px; color: var(--text2);
+    }
+    .db-count b { color: var(--accent); }
+    .refresh-btn {
+      display: flex; align-items: center; gap: 5px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text2);
+      font-size: 12px; padding: 6px 12px;
+      cursor: pointer; font-family: inherit;
+      transition: all 0.15s;
+    }
+    .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    .chunk-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .chunk-header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 16px;
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+    }
+    .chunk-num {
+      width: 24px; height: 24px; border-radius: 6px;
+      background: var(--accent); color: #fff;
+      font-size: 11px; font-weight: 700;
+      display: grid; place-items: center; flex-shrink: 0;
+    }
+    .chunk-file { font-size: 12px; font-weight: 600; color: var(--text); }
+    .chunk-meta { font-size: 11px; color: var(--text3); margin-left: auto; }
+    .chunk-body {
+      padding: 14px 16px;
+      font-size: 12px; color: var(--text2);
+      line-height: 1.7;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      display: none;
+    }
+    .chunk-body.open { display: block; }
+    .chunk-arrow { font-size: 10px; color: var(--text3); transition: transform 0.2s; }
+    .chunk-arrow.open { transform: rotate(90deg); }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 10px; }
+  </style>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-icon">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    </div>
+    <div>
+      <div class="brand-name">RAG Research Agent</div>
+      <div class="brand-sub">LangGraph · LLaMA3 · ChromaDB — 100% Local</div>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="chunk-pill">Indexed: <b id="doc-count">—</b></div>
+    <div class="status-pill">
+      <div class="status-dot" id="health-dot"></div>
+      <span id="health-text">Connecting...</span>
+    </div>
+  </div>
+</header>
+
+<!-- WORKSPACE -->
+<div class="workspace">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+
+    <div class="sidebar-section">
+      <div class="section-label">Ingest Documents</div>
+      <div class="field">
+        <label>Folder path</label>
+        <input type="text" id="ingest-dir" value="data/sample_docs" placeholder="data/sample_docs"/>
+      </div>
+      <button class="btn btn-primary" id="ingest-btn" onclick="ingest()">Ingest Documents</button>
+      <button class="btn btn-outline" onclick="resetIndex()">Clear Index</button>
+      <div class="alert" id="ingest-alert"></div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="section-label">Agent Pipeline</div>
+      <div class="pipeline">
+        <div class="step" id="step-route">
+          <div class="step-num">1</div> Route Query
+          <div class="step-pulse"></div>
+        </div>
+        <div class="step" id="step-retrieve">
+          <div class="step-num">2</div> Retrieve Docs
+          <div class="step-pulse"></div>
+        </div>
+        <div class="step" id="step-grade">
+          <div class="step-num">3</div> Grade Relevance
+          <div class="step-pulse"></div>
+        </div>
+        <div class="step" id="step-generate">
+          <div class="step-num">4</div> Generate Answer
+          <div class="step-pulse"></div>
+        </div>
+        <div class="step" id="step-format">
+          <div class="step-num">5</div> Format Report
+          <div class="step-pulse"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="section-label">Supported Formats</div>
+      <div class="formats">
+        <div class="fmt-item">PDF Documents <span class="fmt-badge badge-pdf">PDF</span></div>
+        <div class="fmt-item">Text Files    <span class="fmt-badge badge-txt">TXT</span></div>
+        <div class="fmt-item">Markdown      <span class="fmt-badge badge-md">MD</span></div>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- MAIN -->
+  <div class="main">
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('research')">Research Agent</div>
+      <div class="tab" onclick="switchTab('db')">View DB Chunks</div>
+    </div>
+
+    <!-- TAB: Research -->
+    <div class="tab-panel active" id="panel-research" style="flex-direction:column;">
+
+    <!-- Query Panel -->
+    <div class="query-panel">
+      <div class="query-panel-label">Research Query</div>
+      <div class="query-inputs">
+        <input class="topic-input" type="text" id="topic-input" placeholder="Topic label (optional) — e.g. Enterprise AI ROI"/>
+        <textarea class="query-textarea" id="query-input" rows="3"
+          placeholder="Ask a research question across your documents..."></textarea>
+        <div class="query-actions">
+          <span class="query-hint">LLaMA3 running locally on your device</span>
+          <button id="run-btn" onclick="runQuery()">
+            <span id="run-label">Run Agent</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Report Area -->
+    <div class="report-area">
+
+      <!-- Meta bar -->
+      <div class="meta-bar" id="meta-bar" style="display:none">
+        <span class="meta-tag accent" id="tag-route"></span>
+        <span class="meta-tag green"  id="tag-sources"></span>
+        <span class="meta-tag"        id="tag-citations"></span>
+      </div>
+
+      <!-- Empty State -->
+      <div id="empty-state">
+        <div class="empty-icon">
+          <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        </div>
+        <div class="empty-title">Ready to Research</div>
+        <div class="empty-sub">Ingest your documents on the left, then type a research question above. The agent will retrieve relevant context and generate a cited report.</div>
+        <div class="chips">
+          <div class="chip" onclick="fillQuery('What are the key benefits and metrics of deploying RAG systems in enterprise environments?', 'Enterprise RAG')">Enterprise RAG benefits</div>
+          <div class="chip" onclick="fillQuery('What is the ROI and manual effort reduction from agentic AI workflows?', 'Agentic AI ROI')">Agentic workflow ROI</div>
+          <div class="chip" onclick="fillQuery('How do multi-agent systems improve business process automation?', 'Multi-Agent Systems')">Multi-agent automation</div>
+          <div class="chip" onclick="fillQuery('What industries benefit most from AI and RAG deployment?', 'Industry Use Cases')">Industry use cases</div>
+        </div>
+      </div>
+
+      <!-- Loading -->
+      <div id="loading-state">
+        <div class="loader-ring"></div>
+        <div class="loader-label">Running research pipeline...</div>
+        <div class="loader-sub">Route → Retrieve → Grade → Generate → Format</div>
+      </div>
+
+      <!-- Report Card -->
+      <div id="report-card">
+        <div class="report-header">
+          <span class="report-title" id="report-title">Research Report</span>
+          <button class="copy-btn" onclick="copyReport()">Copy Report</button>
+        </div>
+        <div class="report-body">
+          <div class="md" id="md-body"></div>
+        </div>
+        <div class="sources-footer" id="sources-footer" style="display:none">
+          <div class="sources-title">Sources</div>
+          <div class="source-chips" id="source-chips"></div>
+        </div>
+      </div>
+
+    </div>
+    </div><!-- end tab-panel research -->
+
+    <!-- TAB: DB Viewer -->
+    <div class="tab-panel" id="panel-db">
+      <div class="db-area" id="db-area">
+        <div class="db-toolbar">
+          <div class="db-count" id="db-count">Click refresh to load chunks</div>
+          <button class="refresh-btn" onclick="loadChunks()">Refresh</button>
+        </div>
+        <div id="chunk-list"></div>
+      </div>
+    </div>
+
+  </div><!-- end main -->
+</div><!-- end workspace -->
+
+<script>
+  const API = 'http://localhost:8000'
+  let lastReport = ''
+
+  const STEPS = ['step-route','step-retrieve','step-grade','step-generate','step-format']
+
+  function resetSteps() {
+    STEPS.forEach(id => document.getElementById(id).classList.remove('active','done'))
+  }
+
+  function animateSteps() {
+    resetSteps()
+    const delays = [0, 2500, 5000, 8500, 13000]
+    STEPS.forEach((id, i) => {
+      setTimeout(() => {
+        STEPS.slice(0, i).forEach(prev => {
+          document.getElementById(prev).classList.remove('active')
+          document.getElementById(prev).classList.add('done')
+        })
+        document.getElementById(id).classList.add('active')
+      }, delays[i])
+    })
+  }
+
+  function doneSteps() {
+    STEPS.forEach(id => {
+      document.getElementById(id).classList.remove('active')
+      document.getElementById(id).classList.add('done')
+    })
+  }
+
+  async function checkHealth() {
+    try {
+      const r = await fetch(`${API}/health`)
+      const d = await r.json()
+      document.getElementById('health-dot').className = 'status-dot online'
+      document.getElementById('health-text').textContent = 'Online'
+      document.getElementById('doc-count').textContent = d.documents_indexed
+    } catch {
+      document.getElementById('health-dot').className = 'status-dot offline'
+      document.getElementById('health-text').textContent = 'Offline'
+      document.getElementById('doc-count').textContent = '—'
+    }
+  }
+
+  async function ingest() {
+    const dir = document.getElementById('ingest-dir').value.trim()
+    if (!dir) return
+    const btn   = document.getElementById('ingest-btn')
+    const alert = document.getElementById('ingest-alert')
+    btn.disabled = true
+    btn.textContent = 'Ingesting...'
+    showAlert(alert, 'info', 'Loading and indexing documents...')
+    try {
+      const r = await fetch(`${API}/ingest`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({data_dir: dir})
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.detail || 'Failed')
+      showAlert(alert, 'success', `${d.chunks_indexed} chunks indexed from ${d.documents_loaded} document(s)`)
+      checkHealth()
+    } catch(e) {
+      showAlert(alert, 'error', e.message)
+    } finally {
+      btn.disabled = false
+      btn.textContent = 'Ingest Documents'
+    }
+  }
+
+  async function resetIndex() {
+    if (!confirm('Clear all indexed documents?')) return
+    await fetch(`${API}/index`, {method:'DELETE'})
+    resetSteps()
+    checkHealth()
+    showAlert(document.getElementById('ingest-alert'), 'info', 'Index cleared.')
+  }
+
+  async function runQuery() {
+    const query = document.getElementById('query-input').value.trim()
+    const topic = document.getElementById('topic-input').value.trim()
+    if (!query) { alert('Please enter a research question.'); return }
+
+    const btn = document.getElementById('run-btn')
+    document.getElementById('run-label').textContent = 'Running...'
+    btn.disabled = true
+
+    document.getElementById('empty-state').style.display   = 'none'
+    document.getElementById('report-card').style.display   = 'none'
+    document.getElementById('meta-bar').style.display      = 'none'
+    document.getElementById('loading-state').style.display = 'flex'
+
+    animateSteps()
+
+    try {
+      const r = await fetch(`${API}/query`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({query, topic: topic || query})
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.detail || 'Query failed')
+
+      doneSteps()
+      lastReport = d.report || ''
+
+      document.getElementById('loading-state').style.display = 'none'
+      document.getElementById('report-card').style.display   = 'block'
+      document.getElementById('meta-bar').style.display      = 'flex'
+
+      document.getElementById('report-title').textContent      = topic || 'Research Report'
+      document.getElementById('md-body').innerHTML             = marked.parse(lastReport || '(No report generated)')
+      document.getElementById('tag-route').textContent         = 'Route: ' + d.route
+      document.getElementById('tag-sources').textContent       = d.sources_used + ' sources used'
+      document.getElementById('tag-citations').textContent     = d.citations.length + ' citations'
+
+      if (d.citations && d.citations.length) {
+        document.getElementById('source-chips').innerHTML = d.citations.map(c =>
+          `<div class="source-chip">${c}</div>`).join('')
+        document.getElementById('sources-footer').style.display = 'block'
+      } else {
+        document.getElementById('sources-footer').style.display = 'none'
+      }
+
+    } catch(e) {
+      resetSteps()
+      document.getElementById('loading-state').style.display = 'none'
+      document.getElementById('empty-state').style.display   = 'flex'
+    } finally {
+      document.getElementById('run-label').textContent = 'Run Agent'
+      btn.disabled = false
+    }
+  }
+
+  function fillQuery(q, t) {
+    document.getElementById('query-input').value = q
+    document.getElementById('topic-input').value = t
+    document.getElementById('query-input').focus()
+  }
+
+  function copyReport() {
+    if (!lastReport) return
+    navigator.clipboard.writeText(lastReport).then(() => {
+      const btn = document.querySelector('.copy-btn')
+      const orig = btn.textContent
+      btn.textContent = 'Copied'
+      setTimeout(() => btn.textContent = orig, 2000)
+    })
+  }
+
+  function showAlert(el, type, msg) {
+    el.className = `alert ${type}`
+    el.textContent = msg
+    el.style.display = 'block'
+  }
+
+  function switchTab(name) {
+    document.querySelectorAll('.tab').forEach((t, i) => {
+      t.classList.toggle('active', ['research','db'][i] === name)
+    })
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'))
+    document.getElementById('panel-' + name).classList.add('active')
+    if (name === 'db') loadChunks()
+  }
+
+  async function loadChunks() {
+    document.getElementById('db-count').innerHTML = 'Loading...'
+    document.getElementById('chunk-list').innerHTML = ''
+    try {
+      const r = await fetch(`${API}/chunks?limit=200`)
+      const d = await r.json()
+      document.getElementById('db-count').innerHTML =
+        `<b>${d.total}</b> chunks stored in ChromaDB`
+      if (d.total === 0) {
+        document.getElementById('chunk-list').innerHTML =
+          '<div style="color:var(--text3);font-size:13px;padding:20px 0">No chunks yet — ingest documents first.</div>'
+        return
+      }
+      document.getElementById('chunk-list').innerHTML = d.chunks.map(c => `
+        <div class="chunk-card">
+          <div class="chunk-header" onclick="toggleChunk(${c.index})">
+            <div class="chunk-num">${c.index}</div>
+            <div class="chunk-file">${c.filename}</div>
+            <div class="chunk-meta">Chunk ${c.chunk_index} &nbsp;|&nbsp; ${c.content.length} chars</div>
+            <span class="chunk-arrow" id="arrow-${c.index}">&#9654;</span>
+          </div>
+          <div class="chunk-body" id="body-${c.index}">${escHtml(c.content)}</div>
+        </div>
+      `).join('')
+    } catch(e) {
+      document.getElementById('db-count').textContent = 'Error: ' + e.message
+    }
+  }
+
+  function toggleChunk(idx) {
+    const body  = document.getElementById('body-' + idx)
+    const arrow = document.getElementById('arrow-' + idx)
+    body.classList.toggle('open')
+    arrow.classList.toggle('open')
+  }
+
+  function escHtml(t) {
+    return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  }
+
+  checkHealth()
+  setInterval(checkHealth, 5000)
+</script>
+</body>
+</html>

@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
@@ -22,6 +24,21 @@ app = FastAPI(
     description="Production-grade document Q&A and research report generation using LangGraph + Claude",
     version="1.0.0",
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+_static_dir = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def serve_ui():
+    return FileResponse(_static_dir / "index.html")
 
 # Module-level singletons (initialized at startup)
 _store: Optional[VectorStore] = None
@@ -110,3 +127,31 @@ def reset_index():
     """Clear the vector store index."""
     _store.reset()
     return {"status": "index cleared"}
+
+
+@app.get("/chunks")
+def get_chunks(limit: int = 100):
+    """Return all stored chunks from ChromaDB for inspection."""
+    if _store is None:
+        raise HTTPException(status_code=503, detail="Store not initialized")
+    collection = _store._collection
+    total = collection.count()
+    if total == 0:
+        return {"total": 0, "chunks": []}
+    results = collection.get(
+        limit=min(limit, total),
+        include=["documents", "metadatas"],
+    )
+    chunks = [
+        {
+            "index": i + 1,
+            "filename": meta.get("filename", "unknown"),
+            "page": meta.get("page", 0),
+            "chunk_index": meta.get("chunk_index", i),
+            "content": doc,
+        }
+        for i, (doc, meta) in enumerate(
+            zip(results["documents"], results["metadatas"])
+        )
+    ]
+    return {"total": total, "chunks": chunks}
