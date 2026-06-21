@@ -58,6 +58,7 @@ Respond ONLY with one of these JSON objects — no other text:
 def retrieve_documents(state: ResearchState, retriever: Any) -> ResearchState:
     """Retrieve relevant document chunks from the vector store."""
     query = state["query"]
+    # Pass query directly — retriever auto-detects exhaustive queries and widens top_k
     docs = retriever.retrieve(query)
     return {**state, "retrieved_docs": docs}
 
@@ -153,42 +154,30 @@ Question: {query}"""
 # Node: format_report
 # ---------------------------------------------------------------------------
 def format_report(state: ResearchState) -> ResearchState:
-    """Synthesize the generation and citations into a structured research report."""
-    query = state["query"]
-    topic = state.get("topic", query)
+    """
+    Format the generation into a final report using a template — no second LLM call.
+    A second LLM pass over the generation (without access to source docs) is the
+    primary source of hallucinated summaries and self-contradictions.
+    """
+    topic = state.get("topic", state["query"])
     generation = state.get("generation", "")
     citations = state.get("citations", [])
     graded_docs = state.get("graded_docs", [])
 
-    sources_section = ""
     if citations:
-        sources_section = "\n".join(f"- {c}" for c in citations)
+        sources_lines = "\n".join(f"- {c}" for c in citations)
     elif graded_docs:
-        sources_section = "\n".join(
+        sources_lines = "\n".join(
             f"- [{i+1}] {d.get('filename', d.get('source', 'Unknown'))}, p.{d.get('page', '?')}"
             for i, d in enumerate(graded_docs)
         )
+    else:
+        sources_lines = "_General knowledge — no documents retrieved._"
 
-    prompt = f"""You are a professional research report writer.
-Transform the following raw analysis into a polished, structured research report in Markdown.
-
-Structure the report with:
-1. **Executive Summary** — 2-3 sentence overview of key findings
-2. **Key Findings** — bullet points of the most important insights
-3. **Detailed Analysis** — the full analysis, well-organized with subheadings
-4. **Conclusions & Recommendations** — actionable takeaways
-5. **Sources** — reference list (provided below)
-
-Research Topic: {topic}
-Original Query: {query}
-
-Raw Analysis:
-{generation}
-
-Sources:
-{sources_section if sources_section else "General knowledge (no documents retrieved)"}
-
-Write the complete formatted research report in Markdown:"""
-
-    report = _chat(prompt)
+    report = (
+        f"# {topic}\n\n"
+        f"{generation}\n\n"
+        f"---\n\n"
+        f"**Sources**\n\n{sources_lines}\n"
+    )
     return {**state, "report": report}

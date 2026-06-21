@@ -4,28 +4,41 @@ from typing import List, Optional
 from ..ingestion.embedder import embed_query
 from .vectorstore import VectorStore
 
+# Keywords that signal the user wants an exhaustive list (not just top results)
+_EXHAUSTIVE_KEYWORDS = {
+    "all", "every", "list", "find all", "show all",
+    "complete list", "full list", "give me all",
+}
+
 
 class DocumentRetriever:
     """Retrieves and re-ranks relevant document chunks for a given query."""
 
     def __init__(self, vectorstore: VectorStore):
         self._store = vectorstore
-        self._top_k = int(os.getenv("TOP_K_RESULTS", "5"))
+        self._top_k = int(os.getenv("TOP_K_RESULTS", "15"))
         self._threshold = float(os.getenv("RELEVANCE_THRESHOLD", "0.4"))
 
     def retrieve(self, query: str, top_k: Optional[int] = None) -> List[dict]:
         """Embed query, retrieve top-k chunks, filter by relevance threshold."""
-        k = top_k or self._top_k
+        # Exhaustive queries ("list all hospitals in Hyderabad") need more chunks
+        if top_k is None:
+            top_k = _exhaustive_top_k(query) or self._top_k
+
         query_vec = embed_query(query)
-        results = self._store.query(query_vec, top_k=k * 2)  # over-fetch for re-ranking
+        results = self._store.query(query_vec, top_k=top_k * 2)  # over-fetch for re-ranking
 
-        # Filter by relevance threshold
         filtered = [r for r in results if r["relevance_score"] >= self._threshold]
-
-        # MMR-style deduplication: remove near-duplicate content
         deduplicated = _deduplicate(filtered, similarity_cutoff=0.95)
+        return deduplicated[:top_k]
 
-        return deduplicated[:k]
+
+def _exhaustive_top_k(query: str) -> Optional[int]:
+    """Return a larger top_k when the query is asking for a complete list."""
+    q_lower = query.lower()
+    if any(kw in q_lower for kw in _EXHAUSTIVE_KEYWORDS):
+        return int(os.getenv("EXHAUSTIVE_TOP_K", "30"))
+    return None
 
 
 def _deduplicate(docs: List[dict], similarity_cutoff: float = 0.95) -> List[dict]:

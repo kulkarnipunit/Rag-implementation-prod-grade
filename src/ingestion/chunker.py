@@ -17,18 +17,37 @@ def chunk_documents(
     chunk_size: int = 800,
     chunk_overlap: int = 150,
 ) -> List[Chunk]:
-    """Split documents into overlapping chunks for embedding."""
+    """
+    Content-type-aware chunking:
+      - table_row  → already one record; stored as a single chunk, no splitting
+      - prose      → character-level sliding window on sentence boundaries
+    """
     chunks: List[Chunk] = []
+
     for doc in docs:
-        doc_chunks = _split_text(doc.content, chunk_size, chunk_overlap)
-        for i, text in enumerate(doc_chunks):
+        content_type = doc.metadata.get("content_type", "prose")
+
+        if content_type == "table_row":
+            # Each table row is an atomic, self-contained fact — never split it
             chunks.append(Chunk(
-                content=text,
+                content=doc.content,
                 source=doc.source,
                 page=doc.page,
-                chunk_index=i,
-                metadata={**doc.metadata, "chunk_index": i, "total_chunks": len(doc_chunks)},
+                chunk_index=0,
+                metadata={**doc.metadata, "chunk_index": 0, "total_chunks": 1},
             ))
+        else:
+            # Prose: sliding window split on sentence boundaries
+            doc_chunks = _split_text(doc.content, chunk_size, chunk_overlap)
+            for i, text in enumerate(doc_chunks):
+                chunks.append(Chunk(
+                    content=text,
+                    source=doc.source,
+                    page=doc.page,
+                    chunk_index=i,
+                    metadata={**doc.metadata, "chunk_index": i, "total_chunks": len(doc_chunks)},
+                ))
+
     return chunks
 
 
@@ -45,7 +64,6 @@ def _split_text(text: str, chunk_size: int, overlap: int) -> List[str]:
             chunks.append(text[start:].strip())
             break
 
-        # Try to split at a sentence boundary
         boundary = _find_sentence_boundary(text, end)
         chunk = text[start:boundary].strip()
         if chunk:

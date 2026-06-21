@@ -4,6 +4,9 @@ from pathlib import Path
 
 from ..ingestion.chunker import Chunk
 
+# ChromaDB only accepts these scalar types as metadata values
+_CHROMA_SAFE = (str, int, float, bool)
+
 
 class VectorStore:
     """ChromaDB-backed vector store with sentence-transformer embeddings."""
@@ -24,16 +27,7 @@ class VectorStore:
         """Upsert chunks and their embeddings into the collection."""
         ids = [f"{c.source}::p{c.page}::c{c.chunk_index}" for c in chunks]
         documents = [c.content for c in chunks]
-        metadatas = [
-            {
-                "source": c.source,
-                "page": c.page,
-                "chunk_index": c.chunk_index,
-                "filename": c.metadata.get("filename", ""),
-                "type": c.metadata.get("type", ""),
-            }
-            for c in chunks
-        ]
+        metadatas = [_safe_metadata(c) for c in chunks]
         self._collection.upsert(
             ids=ids,
             embeddings=embeddings,
@@ -68,7 +62,10 @@ class VectorStore:
                 "source": meta.get("source", ""),
                 "filename": meta.get("filename", ""),
                 "page": meta.get("page", 0),
-                "relevance_score": 1.0 - dist,  # cosine distance → similarity
+                "content_type": meta.get("content_type", "prose"),
+                "relevance_score": 1.0 - dist,
+                # pass through all structured fields (city, state, hospital…)
+                **{k: v for k, v in meta.items() if k not in {"source", "filename", "page", "content_type"}},
             })
         return chunks_out
 
@@ -81,3 +78,20 @@ class VectorStore:
             name=self.COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
         )
+
+
+def _safe_metadata(chunk: Chunk) -> dict:
+    """Build a ChromaDB-safe metadata dict from a Chunk, preserving all structured fields."""
+    base = {
+        "source": chunk.source,
+        "page": chunk.page,
+        "chunk_index": chunk.chunk_index,
+        "filename": chunk.metadata.get("filename", ""),
+        "type": chunk.metadata.get("type", ""),
+        "content_type": chunk.metadata.get("content_type", "prose"),
+    }
+    # Forward any extra structured metadata from table rows (city, state, hospital, etc.)
+    for key, val in chunk.metadata.items():
+        if key not in base and isinstance(val, _CHROMA_SAFE):
+            base[key] = val
+    return base
