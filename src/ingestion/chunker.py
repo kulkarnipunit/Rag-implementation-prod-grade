@@ -1,3 +1,4 @@
+from collections import defaultdict
 from typing import List
 from dataclasses import dataclass
 from .loader import RawDocument
@@ -21,31 +22,38 @@ def chunk_documents(
     Content-type-aware chunking:
       - table_row  → already one record; stored as a single chunk, no splitting
       - prose      → character-level sliding window on sentence boundaries
+
+    chunk_index is a per-(source, page) counter so every chunk on the same
+    page gets a unique ID regardless of content type.
     """
     chunks: List[Chunk] = []
+    page_counters: dict = defaultdict(int)  # (source, page) -> next index
 
     for doc in docs:
         content_type = doc.metadata.get("content_type", "prose")
+        key = (doc.source, doc.page)
 
         if content_type == "table_row":
-            # Each table row is an atomic, self-contained fact — never split it
+            idx = page_counters[key]
+            page_counters[key] += 1
             chunks.append(Chunk(
                 content=doc.content,
                 source=doc.source,
                 page=doc.page,
-                chunk_index=0,
-                metadata={**doc.metadata, "chunk_index": 0, "total_chunks": 1},
+                chunk_index=idx,
+                metadata={**doc.metadata, "chunk_index": idx, "total_chunks": 1},
             ))
         else:
-            # Prose: sliding window split on sentence boundaries
             doc_chunks = _split_text(doc.content, chunk_size, chunk_overlap)
-            for i, text in enumerate(doc_chunks):
+            for text in doc_chunks:
+                idx = page_counters[key]
+                page_counters[key] += 1
                 chunks.append(Chunk(
                     content=text,
                     source=doc.source,
                     page=doc.page,
-                    chunk_index=i,
-                    metadata={**doc.metadata, "chunk_index": i, "total_chunks": len(doc_chunks)},
+                    chunk_index=idx,
+                    metadata={**doc.metadata, "chunk_index": idx, "total_chunks": len(doc_chunks)},
                 ))
 
     return chunks
