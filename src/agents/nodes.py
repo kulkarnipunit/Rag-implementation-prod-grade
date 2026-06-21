@@ -3,23 +3,12 @@ import os
 import json
 from typing import Any
 
-import ollama
-
+from ..llm.client import chat as _chat
 from .state import ResearchState
 
 
-MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "8192"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "2"))
-
-
-def _chat(prompt: str, max_tokens: int = MAX_TOKENS) -> str:
-    response = ollama.chat(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        options={"num_predict": max_tokens},
-    )
-    return response["message"]["content"]
 
 
 # ---------------------------------------------------------------------------
