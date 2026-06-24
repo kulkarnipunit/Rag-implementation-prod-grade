@@ -13,3 +13,7 @@ uvicorn[standard]>=0.30.0
 tiktoken>=0.7.0
 numpy>=1.26.0
 rich>=13.0.0
+httpx>=0.27.0
+# Image OCR support (optional) — also requires: brew install tesseract
+pytesseract>=0.3.13
+Pillow>=10.0.0

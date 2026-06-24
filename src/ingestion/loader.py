@@ -11,6 +11,9 @@ class RawDocument:
     metadata: dict = field(default_factory=dict)
 
 
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".gif", ".webp"}
+
+
 def load_documents(data_dir: Union[str, Path]) -> List[RawDocument]:
     """Load all supported documents from a directory."""
     data_dir = Path(data_dir)
@@ -18,10 +21,13 @@ def load_documents(data_dir: Union[str, Path]) -> List[RawDocument]:
 
     for path in sorted(data_dir.rglob("*")):
         if path.is_file():
-            if path.suffix.lower() == ".pdf":
+            ext = path.suffix.lower()
+            if ext == ".pdf":
                 docs.extend(_load_pdf(path))
-            elif path.suffix.lower() in {".txt", ".md"}:
+            elif ext in {".txt", ".md"}:
                 docs.extend(_load_text(path))
+            elif ext in IMAGE_EXTENSIONS:
+                docs.extend(_load_image(path))
 
     return docs
 
@@ -148,4 +154,37 @@ def _load_text(path: Path) -> List[RawDocument]:
         source=str(path),
         page=1,
         metadata={"type": path.suffix.lstrip("."), "filename": path.name, "content_type": "prose"},
+    )]
+
+
+def _load_image(path: Path) -> List[RawDocument]:
+    """OCR an image file using pytesseract and return extracted text as a document.
+
+    Requires: pip install pytesseract Pillow
+    System dep: tesseract-ocr (brew install tesseract on macOS)
+    """
+    try:
+        import pytesseract
+        from PIL import Image
+    except ImportError:
+        raise ImportError(
+            "Image support requires: pip install pytesseract Pillow\n"
+            "Also install system tesseract: brew install tesseract"
+        )
+
+    image = Image.open(path)
+    text = pytesseract.image_to_string(image).strip()
+    if not text:
+        return []
+
+    return [RawDocument(
+        content=text,
+        source=str(path),
+        page=1,
+        metadata={
+            "type": "image",
+            "filename": path.name,
+            "content_type": "image_ocr",
+            "image_format": path.suffix.lstrip(".").upper(),
+        },
     )]

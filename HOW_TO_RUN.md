@@ -260,10 +260,46 @@ Rag-implementation-prod-grade/
 | GET | `http://localhost:8000` | Opens the UI |
 | GET | `http://localhost:8000/docs` | Swagger auto-docs — test all endpoints here |
 | GET | `http://localhost:8000/health` | Shows how many documents are indexed |
-| POST | `http://localhost:8000/ingest` | Index a folder of documents |
+| POST | `http://localhost:8000/ingest` | Ingest synchronously — blocks until done |
+| POST | `http://localhost:8000/ingest/async` | Enqueue ingest job, returns `job_id` immediately |
+| GET | `http://localhost:8000/jobs/{job_id}` | Poll async job status |
 | POST | `http://localhost:8000/query` | Run the agent, returns a research report |
 | GET | `http://localhost:8000/chunks` | Inspect all stored chunks in ChromaDB |
 | DELETE | `http://localhost:8000/index` | Wipe the vector store |
+
+### Async ingest example
+
+```bash
+# Submit — returns instantly
+curl -X POST http://localhost:8000/ingest/async \
+  -H "Content-Type: application/json" \
+  -d '{"data_dir": "data/sample_docs", "webhook_url": "https://webhook.site/your-id"}'
+# → {"job_id": "abc-123", "status": "queued", "poll_url": "/jobs/abc-123"}
+
+# Poll status
+curl http://localhost:8000/jobs/abc-123
+# → {"status": "success", "result": {"chunks_indexed": 42, ...}}
+```
+
+---
+
+## Image Support (OCR)
+
+Images (`.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.gif`, `.webp`) are OCR'd automatically when present in the ingest directory.
+
+**Setup (one time):**
+
+```bash
+# macOS
+brew install tesseract
+pip install pytesseract Pillow
+
+# Ubuntu/Debian
+sudo apt install tesseract-ocr
+pip install pytesseract Pillow
+```
+
+After that, just drop images into your data folder and run ingest as normal.
 
 ---
 

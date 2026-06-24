@@ -106,6 +106,300 @@ The agent doesn't just retrieve and paste — it routes intelligently, grades do
 
 ---
 
+## Async Job Queue & Crash Recovery
+
+### Why Async Ingest?
+
+The synchronous `POST /ingest` endpoint blocks the HTTP connection while loading, chunking, and embedding — which can take 30–120 seconds for large document sets. With many users this becomes a bottleneck immediately.
+
+The async queue decouples receiving the request from doing the work:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    ASYNC INGEST FLOW                                │
+│                                                                     │
+│  Client                  API Server              Background         │
+│    │                         │                    Workers           │
+│    │  POST /ingest/async     │                       │             │
+│    │ ──────────────────────► │                       │             │
+│    │  {data_dir, webhook}    │                       │             │
+│    │                         │── enqueue(job) ──────►│             │
+│    │                         │   (puts in queue,     │ status:     │
+│    │◄──────────────────────  │    returns instantly) │ "queued"    │
+│    │  202 {job_id:"abc-123"} │                       │             │
+│    │  status: "queued"       │                       │             │
+│    │                         │                 Worker picks up job │
+│    │  GET /jobs/abc-123 ───► │                 status: "processing"│
+│    │◄────────────────────    │                       │             │
+│    │  {status:"processing"}  │                 load → chunk        │
+│    │                         │                 embed → store       │
+│    │                         │                       │             │
+│    │                         │◄── job done ──────────┤             │
+│    │                         │    status: "success"  │             │
+│    │◄── POST /your-webhook   │                       │             │
+│    │    {job_id, status,      │                      │             │
+│    │     chunks_indexed:42}  │                       │             │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### How the Worker Actually Runs
+
+FastAPI runs on a single asyncio event loop. The worker is a background coroutine — not a thread, not a process — that lives on the same loop:
+
+```
+uvicorn starts
+     │
+     └─► asyncio event loop starts
+               │
+               ├─► Worker-0 task created ──► frozen at queue.get()
+               ├─► Worker-1 task created ──► frozen at queue.get()   } all waiting
+               ├─► Worker-2 task created ──► frozen at queue.get()   } for jobs
+               ├─► Reaper   task created ──► frozen at asyncio.sleep()
+               │
+               │   [HTTP: POST /ingest/async arrives]
+               ├─► enqueue(job) → puts job in asyncio.Queue
+               │   returns 202 to client immediately
+               │
+               │   [event loop ticks]
+               ├─► Worker-0 wakes (queue.get() unblocks)
+               │       │
+               │       └─► run_in_executor(thread_pool, heavy_work)
+               │               Worker-0 suspends → event loop FREE
+               │
+               │   [HTTP: GET /jobs/abc-123 arrives while job is running]
+               ├─► reads job.status from dict → returns "processing"
+               │   (no waiting, no blocking)
+               │
+               │   [thread pool finishes embedding]
+               ├─► Worker-0 resumes → status="success"
+               ├─► fires webhook via httpx (async)
+               └─► Worker-0 freezes again at queue.get()
+```
+
+**Key rule:** `run_in_executor` moves CPU-heavy work (chunking, embedding) to a thread pool so the event loop never blocks. HTTP requests keep being served while a job is running.
+
+### Concurrent Workers
+
+With `WORKER_CONCURRENCY=3`, three worker coroutines share one queue. `asyncio.Queue` guarantees each job goes to exactly one worker — no coordination code needed:
+
+```
+                    asyncio.Queue
+                  ┌──────────────────────────────┐
+  incoming jobs → │ [job4][job3][job2][job1]     │
+                  └──────┬──────┬──────┬─────────┘
+                         │      │      │
+                    ┌────▼─┐ ┌──▼───┐ ┌▼─────┐
+                    │  W-0 │ │  W-1 │ │  W-2 │   ← 3 jobs running in parallel
+                    │ job1 │ │ job2 │ │ job3 │
+                    └──────┘ └──────┘ └──────┘
+                         │
+                    when W-0 finishes job1, it immediately picks up job4
+```
+
+With 100 users, job #100 waits in queue while 3 jobs process in parallel — instead of waiting for all 99 to finish serially.
+
+---
+
+### Crash Recovery — The Reaper
+
+**The problem without recovery:**
+
+```
+Worker picks up job ──► status = "processing"
+        │
+        ▼
+   queue.get() already removed the job from the queue
+        │
+        ▼
+   Worker crashes (OOM / SIGKILL / unhandled exception)
+        │
+        ▼
+   Job stuck at "processing" FOREVER ✗
+   User polls GET /jobs/{id} → sees "processing" forever
+```
+
+**How the Reaper fixes it:**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      REAPER RECOVERY FLOW                           │
+│                                                                     │
+│  Worker-1 picks up job ──► sets processing_started_at = 12:00:00   │
+│  Worker-1 crashes at 12:01:00                                       │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  REAPER wakes every 30 seconds                              │    │
+│  │                                                             │    │
+│  │  [12:00:30] scan jobs → job processing 30s → under 300s    │    │
+│  │             → skip, not timed out yet                       │    │
+│  │                                                             │    │
+│  │  [12:01:00] scan jobs → job processing 60s → under 300s    │    │
+│  │             → skip                                          │    │
+│  │              ...                                            │    │
+│  │  [12:05:30] scan jobs → job processing 330s > 300s ✗       │    │
+│  │             retry_count=0 < MAX_RETRIES=3                   │    │
+│  │             → retry_count = 1                               │    │
+│  │             → status = "queued"                             │    │
+│  │             → put job BACK on queue                         │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                     │
+│  [12:05:31] Worker-0 picks up the re-queued job                     │
+│             Runs it successfully                                     │
+│             status = "success", retry_count = 1                     │
+│                                                                     │
+│  If it crashes again:                                               │
+│    retry_count=1 → 2 → 3 → MAX_RETRIES reached                     │
+│    status = "failed", error = "Permanently failed after 3 retries"  │
+│    webhook fires with failure payload                               │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Why re-running from scratch is safe (idempotency):**
+
+```
+load_documents(data_dir)   ←  pure read,  same files → same RawDocuments
+chunk_documents(raw_docs)  ←  pure fn,   same input  → same chunks
+embed_chunks(chunks)       ←  deterministic, same text → same vectors
+store.add_chunks(...)      ←  ChromaDB upserts by ID, duplicates = overwrite not double
+```
+
+Running the same ingest twice produces the identical end state. This property — called **idempotency** — is what makes safe retries possible.
+
+**Config (via `.env`):**
+
+```
+JOB_TIMEOUT_SECONDS=300     # job stuck longer than this → assumed crashed
+MAX_RETRIES=3               # max re-queue attempts before permanent failure
+REAPER_INTERVAL_SECONDS=30  # how often the reaper scans
+WORKER_CONCURRENCY=3        # parallel workers (set to CPU cores - 1)
+```
+
+---
+
+### Current vs Production Architecture
+
+```
+CURRENT  (single machine, everything in one process)
+─────────────────────────────────────────────────────────────────
+Browser ──► uvicorn ──► asyncio.Queue (RAM) ──► worker coroutines
+                                                      │
+                                              sentence-transformers
+                                              (local CPU)
+                                                      │
+                                              ChromaDB (local disk)
+                                                      │
+                                              Ollama llama3 (local)
+
+
+PRODUCTION  (each layer scales independently)
+─────────────────────────────────────────────────────────────────
+
+  Users
+    │
+    ▼
+  CDN / WAF (Cloudflare)          ← blocks bad traffic, caches static
+    │
+    ▼
+  Load Balancer (AWS ALB / nginx) ← SSL termination, health checks
+    │
+  ┌─┴─────────────────┐
+  │                   │
+  ▼                   ▼
+API #1             API #2          ← stateless uvicorn replicas
+  │                   │              auto-scale on CPU/memory
+  └─────┬─────────────┘
+        │  enqueue (does NOT process here)
+        ▼
+  Message Queue (AWS SQS / Redis) ← PERSISTENT, shared across all API replicas
+  [job][job][job][job]...           jobs survive server restarts
+        │
+  ┌─────┴─────────────┐
+  │                   │
+  ▼                   ▼
+Worker #1          Worker #2       ← separate processes/machines (Celery / RQ)
+  │                   │              scale independently of API layer
+  └──────┬────────────┘
+         │
+  ┌──────┴────────────────────────────┐
+  │                                   │
+  ▼                                   ▼
+Embedding API                     LLM API
+(AWS Bedrock / OpenAI)           (Claude API)
+  │                               not local Ollama
+  ▼
+Vector DB (Pinecone / Qdrant)    ← managed, HA, backups built in
+                                   not local ChromaDB
+
+Job status stored in:
+  PostgreSQL / Redis               ← not in-memory dict
+  (survives restarts, visible      GET /jobs/{id} works
+   to all API replicas)            across all API servers
+
+
+What SQS does vs our in-process reaper:
+─────────────────────────────────────────
+  Our reaper               │  AWS SQS
+  ─────────────────────────┼──────────────────────────────────
+  processing_started_at    │  VisibilityTimeout starts on receive
+  JOB_TIMEOUT_SECONDS=300  │  VisibilityTimeout=300
+  reaper re-queues it      │  timeout expires → message visible again
+  retry_count / MAX_RETRIES│  MaxReceiveCount → Dead Letter Queue
+  status = "failed"        │  message moved to DLQ
+  ─────────────────────────┴──────────────────────────────────
+  Difference: SQS survives full server restart.
+  Our reaper only survives a worker crash inside a running process.
+```
+
+---
+
+### API Reference (full)
+
+| Method | URL | Behaviour |
+|---|---|---|
+| `GET` | `/` | Web UI |
+| `GET` | `/docs` | Swagger — test all endpoints |
+| `GET` | `/health` | Status + documents indexed |
+| `POST` | `/ingest` | Synchronous ingest — blocks until done |
+| `POST` | `/ingest/async` | Enqueue job, return `job_id` immediately (202) |
+| `GET` | `/jobs` | Queue depth + status breakdown |
+| `GET` | `/jobs/{job_id}` | Status of a specific job |
+| `POST` | `/query` | Run full agent, return research report |
+| `GET` | `/chunks` | Inspect stored chunks in ChromaDB |
+| `DELETE` | `/index` | Clear the vector store |
+
+---
+
+## Supported File Formats
+
+```
+┌──────────────────────────────────────────────────────────┐
+│               DOCUMENT INGESTION PIPELINE                │
+│                                                          │
+│  .pdf  ──► pdfplumber ──► table rows + prose text        │
+│  .txt  ──► raw text reader                               │
+│  .md   ──► raw text reader                               │
+│  .png  ──┐                                               │
+│  .jpg  ──┤                                               │
+│  .jpeg ──┼─► pytesseract (OCR) ──► extracted text        │
+│  .tiff ──┤     requires: brew install tesseract          │
+│  .bmp  ──┤               pip install pytesseract Pillow  │
+│  .gif  ──┘                                               │
+│                    │                                     │
+│                    ▼  (all formats converge here)        │
+│             Chunker (800 chars, 150 overlap)             │
+│                    │                                     │
+│                    ▼                                     │
+│        Embedder (all-MiniLM-L6-v2, 384-dim)             │
+│                    │                                     │
+│                    ▼                                     │
+│         ChromaDB vector store (HNSW, cosine)            │
+└──────────────────────────────────────────────────────────┘
+```
+
+PDF files get special treatment — tables are extracted row-by-row as structured `key: value` text, while prose outside table bounding boxes is extracted separately. This preserves the meaning of tabular data that naive text extraction would mangle.
+
+---
+
 ## Key Technical Concepts
 
 ### RAG (Retrieval-Augmented Generation)

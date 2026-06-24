@@ -228,6 +228,7 @@
     .badge-pdf { background: #fee2e2; color: #dc2626; }
     .badge-txt { background: #dcfce7; color: #16a34a; }
     .badge-md  { background: #ede9fe; color: #7c3aed; }
+    .badge-img { background: #fef3c7; color: #d97706; }
 
     /* MAIN */
     .main {
@@ -562,7 +563,14 @@
         <label>Folder path</label>
         <input type="text" id="ingest-dir" value="data/sample_docs" placeholder="data/sample_docs"/>
       </div>
-      <button class="btn btn-primary" id="ingest-btn" onclick="ingest()">Ingest Documents</button>
+      <div class="field">
+        <label>Webhook URL <span style="color:var(--text3);font-weight:400">(optional — async only)</span></label>
+        <input type="text" id="webhook-url" placeholder="https://your-server.com/webhook"/>
+      </div>
+      <div style="display:flex;gap:7px;margin-bottom:4px">
+        <button class="btn btn-primary" id="ingest-btn" onclick="ingest()" style="flex:1">Sync</button>
+        <button class="btn btn-primary" id="async-btn" onclick="ingestAsync()" style="flex:1;background:#059669">Async</button>
+      </div>
       <button class="btn btn-outline" onclick="resetIndex()">Clear Index</button>
       <div class="alert" id="ingest-alert"></div>
     </div>
@@ -599,6 +607,7 @@
         <div class="fmt-item">PDF Documents <span class="fmt-badge badge-pdf">PDF</span></div>
         <div class="fmt-item">Text Files    <span class="fmt-badge badge-txt">TXT</span></div>
         <div class="fmt-item">Markdown      <span class="fmt-badge badge-md">MD</span></div>
+        <div class="fmt-item">Images (OCR)  <span class="fmt-badge badge-img">IMG</span></div>
       </div>
     </div>
 
@@ -765,6 +774,60 @@
       btn.disabled = false
       btn.textContent = 'Ingest Documents'
     }
+  }
+
+  async function ingestAsync() {
+    const dir = document.getElementById('ingest-dir').value.trim()
+    const webhook = document.getElementById('webhook-url').value.trim()
+    if (!dir) return
+    const btn   = document.getElementById('async-btn')
+    const alert = document.getElementById('ingest-alert')
+    btn.disabled = true
+    btn.textContent = 'Queuing...'
+    try {
+      const r = await fetch(`${API}/ingest/async`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({data_dir: dir, webhook_url: webhook || null})
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.detail || 'Failed')
+      showAlert(alert, 'info', `Job queued — ID: ${d.job_id.slice(0,8)}… Polling status…`)
+      pollJob(d.job_id, alert)
+    } catch(e) {
+      showAlert(alert, 'error', e.message)
+      btn.disabled = false
+      btn.textContent = 'Async'
+    }
+  }
+
+  async function pollJob(jobId, alertEl) {
+    const btn = document.getElementById('async-btn')
+    const interval = setInterval(async () => {
+      try {
+        const r = await fetch(`${API}/jobs/${jobId}`)
+        const d = await r.json()
+        if (d.status === 'success') {
+          clearInterval(interval)
+          showAlert(alertEl, 'success',
+            `Done! ${d.result.chunks_indexed} chunks indexed from ${d.result.documents_loaded} doc(s)`)
+          btn.disabled = false
+          btn.textContent = 'Async'
+          checkHealth()
+        } else if (d.status === 'failed') {
+          clearInterval(interval)
+          showAlert(alertEl, 'error', `Job failed: ${d.error}`)
+          btn.disabled = false
+          btn.textContent = 'Async'
+        } else {
+          showAlert(alertEl, 'info', `Status: ${d.status} — ID: ${jobId.slice(0,8)}…`)
+        }
+      } catch {
+        clearInterval(interval)
+        btn.disabled = false
+        btn.textContent = 'Async'
+      }
+    }, 2000)
   }
 
   async function resetIndex() {
